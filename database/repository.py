@@ -45,18 +45,42 @@ class Repository:
         account_ref: str,
         broker: str | None = None,
         currency: str | None = None,
+        statement_path: str | None = None,
     ) -> AccountRecord:
         cursor = self.connection.execute(
-            "INSERT INTO accounts (user_id, account_ref, broker, currency) VALUES (?, ?, ?, ?)",
-            (user_id, account_ref, broker, currency),
+            "INSERT INTO accounts (user_id, account_ref, broker, currency, statement_path) VALUES (?, ?, ?, ?, ?)",
+            (user_id, account_ref, broker, currency, statement_path),
         )
         self.connection.commit()
         return self.get_account(cursor.lastrowid)
 
+    def save_account(
+        self,
+        user_id: int,
+        account_ref: str,
+        broker: str | None = None,
+        currency: str | None = None,
+        statement_path: str | None = None,
+    ) -> AccountRecord:
+        self.connection.execute(
+            """
+            INSERT INTO accounts (user_id, account_ref, broker, currency, statement_path)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, account_ref)
+            DO UPDATE SET
+                broker = excluded.broker,
+                currency = excluded.currency,
+                statement_path = COALESCE(excluded.statement_path, accounts.statement_path)
+            """,
+            (user_id, account_ref, broker, currency, statement_path),
+        )
+        self.connection.commit()
+        return self.get_account_for_user(user_id, account_ref)
+
     def get_account(self, account_id: int) -> AccountRecord:
         row = self.connection.execute(
             """
-            SELECT id, user_id, account_ref, broker, currency, created_at
+            SELECT id, user_id, account_ref, broker, currency, statement_path, created_at
             FROM accounts
             WHERE id = ?
             """,
@@ -70,7 +94,7 @@ class Repository:
         if user_id is None:
             rows = self.connection.execute(
                 """
-                SELECT id, user_id, account_ref, broker, currency, created_at
+                SELECT id, user_id, account_ref, broker, currency, statement_path, created_at
                 FROM accounts
                 ORDER BY id
                 """
@@ -78,7 +102,7 @@ class Repository:
         else:
             rows = self.connection.execute(
                 """
-                SELECT id, user_id, account_ref, broker, currency, created_at
+                SELECT id, user_id, account_ref, broker, currency, statement_path, created_at
                 FROM accounts
                 WHERE user_id = ?
                 ORDER BY id
@@ -86,6 +110,26 @@ class Repository:
                 (user_id,),
             ).fetchall()
         return [_account_from_row(row) for row in rows]
+
+    def get_account_for_user(self, user_id: int, account_ref: str) -> AccountRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, user_id, account_ref, broker, currency, statement_path, created_at
+            FROM accounts
+            WHERE user_id = ? AND account_ref = ?
+            """,
+            (user_id, account_ref),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Account not found for user: {user_id}/{account_ref}")
+        return _account_from_row(row)
+
+    def account_exists_for_ref(self, account_ref: str) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM accounts WHERE account_ref = ? LIMIT 1",
+            (account_ref,),
+        ).fetchone()
+        return row is not None
 
     def save_trades(self, account_id: int, trades: list[NormalizedTrade]) -> list[TradeRecord]:
         records: list[TradeRecord] = []
@@ -362,6 +406,7 @@ def _account_from_row(row: sqlite3.Row) -> AccountRecord:
         account_ref=str(row["account_ref"]),
         broker=row["broker"],
         currency=row["currency"],
+        statement_path=row["statement_path"],
         created_at=str(row["created_at"]),
     )
 

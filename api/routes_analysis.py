@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
-from api.routes_accounts import resolve_statement_path
+from auth.auth_service import AuthenticatedUser
+from auth.dependencies import get_current_user
+from auth.permissions import get_repository, resolve_owned_statement_path
+from database.repository import Repository
 from dashboard.data_loader import DEFAULT_INITIAL_BALANCE, DashboardData, load_dashboard_data
 
 
@@ -27,8 +29,14 @@ class AnalyzeAccountRequest(BaseModel):
 
 
 @router.post("/analyze-account")
-def analyze_account(request: AnalyzeAccountRequest) -> dict[str, object]:
-    statement_path = resolve_statement_path(
+def analyze_account(
+    request: AnalyzeAccountRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    repository: Repository = Depends(get_repository),
+) -> dict[str, object]:
+    account, statement_path = resolve_owned_statement_path(
+        current_user=current_user,
+        repository=repository,
         account_id=request.account_id,
         statement_path=request.statement_path,
     )
@@ -38,7 +46,7 @@ def analyze_account(request: AnalyzeAccountRequest) -> dict[str, object]:
         cycle_target=request.cycle_target,
     )
     return serialize_dashboard_payload(
-        account_id=request.account_id or Path(statement_path).stem,
+        account_id=account.account_ref,
         statement_path=statement_path,
         dashboard_data=dashboard_data,
     )
@@ -49,15 +57,21 @@ def get_dashboard(
     account_id: str,
     initial_balance: float = DEFAULT_INITIAL_BALANCE,
     cycle_target: float | None = None,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    repository: Repository = Depends(get_repository),
 ) -> dict[str, object]:
-    statement_path = resolve_statement_path(account_id=account_id)
+    account, statement_path = resolve_owned_statement_path(
+        current_user=current_user,
+        repository=repository,
+        account_id=account_id,
+    )
     dashboard_data = load_dashboard_data(
         statement_path=statement_path,
         initial_balance=initial_balance,
         cycle_target=cycle_target,
     )
     return serialize_dashboard_payload(
-        account_id=account_id,
+        account_id=account.account_ref,
         statement_path=statement_path,
         dashboard_data=dashboard_data,
     )

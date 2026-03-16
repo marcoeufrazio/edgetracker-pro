@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from analytics.account_comparison import build_account_comparison
 from analytics.importers import resolve_mt4_statement_path
 from analytics.multi_account import _extract_account_id, analyze_multiple_accounts
+from auth.auth_service import AuthenticatedUser
+from auth.dependencies import get_current_user, get_optional_current_user
+from auth.permissions import get_repository
+from database.repository import Repository
 from dashboard.data_loader import DEFAULT_INITIAL_BALANCE
 
 
@@ -18,7 +22,11 @@ SUPPORTED_STATEMENT_SUFFIXES = {".html", ".htm"}
 
 
 @router.post("/upload-statement")
-async def upload_statement(file: UploadFile = File(...)) -> dict[str, object]:
+async def upload_statement(
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+    repository: Repository = Depends(get_repository),
+) -> dict[str, object]:
     filename = Path(file.filename or "statement.html").name
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_STATEMENT_SUFFIXES:
@@ -27,11 +35,19 @@ async def upload_statement(file: UploadFile = File(...)) -> dict[str, object]:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     target_path = UPLOADS_DIR / filename
     target_path.write_bytes(await file.read())
+    account_id = _extract_account_id(target_path)
+
+    if current_user is not None:
+        repository.save_account(
+            user_id=current_user.id,
+            account_ref=account_id,
+            statement_path=str(target_path),
+        )
 
     return {
         "filename": target_path.name,
         "statement_path": str(target_path),
-        "account_id": _extract_account_id(target_path),
+        "account_id": account_id,
     }
 
 
@@ -39,8 +55,14 @@ async def upload_statement(file: UploadFile = File(...)) -> dict[str, object]:
 def get_accounts_comparison(
     initial_balance: float = DEFAULT_INITIAL_BALANCE,
     cycle_target: float | None = None,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    repository: Repository = Depends(get_repository),
 ) -> dict[str, object]:
-    statement_paths = [str(path) for path in list_available_statement_paths()]
+    statement_paths = [
+        str(resolve_mt4_statement_path(account.statement_path))
+        for account in repository.list_accounts(current_user.id)
+        if account.statement_path
+    ]
     analyses = analyze_multiple_accounts(
         statement_paths=statement_paths,
         initial_balance=initial_balance,

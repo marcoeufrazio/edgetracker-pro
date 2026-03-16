@@ -18,6 +18,7 @@ class AccountRecord:
     account_ref: str
     broker: str | None
     currency: str | None
+    statement_path: str | None = None
     created_at: str | None = None
 
 

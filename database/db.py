@@ -33,6 +33,7 @@ def initialize_db(connection: sqlite3.Connection) -> None:
             account_ref TEXT NOT NULL,
             broker TEXT,
             currency TEXT,
+            statement_path TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, account_ref),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -91,6 +92,7 @@ def initialize_db(connection: sqlite3.Connection) -> None:
         """
     )
     _ensure_column_exists(connection, "users", "password_hash", "TEXT")
+    _ensure_column_exists(connection, "accounts", "statement_path", "TEXT")
     connection.commit()
 
 
