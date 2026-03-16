@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +19,7 @@ from dashboard.data_loader import DEFAULT_INITIAL_BALANCE, load_dashboard_data
 from dashboard.filters import TradeFilters, get_filter_options
 from dashboard.insights_formatter import format_strategy_analyzer, format_trade_intelligence
 from dashboard.recommendations_panel import render_recommendations_panel
-from dashboard.strategy_panel import render_strategy_analyzer_panel, render_trade_intelligence_panel
+from dashboard.strategy_panel import render_trade_intelligence_panel
 from dashboard.trade_explorer import build_filtered_trade_rows
 
 
@@ -95,6 +96,10 @@ def main() -> None:
         date_to=date_to,
     )
     filtered_trade_rows = build_filtered_trade_rows(data.normalized_trades, trade_filters)
+
+    _render_health_banner(data, recommendations)
+
+    _section_spacing()
 
     render_section_title("Core Metrics", "Snapshot of the most important performance indicators.")
     metric_columns = st.columns(5)
@@ -179,6 +184,23 @@ def main() -> None:
         "Key Recommendations",
         "Actionable insights generated from your current performance profile.",
     )
+
+    recommendation_summary_columns = st.columns(3)
+    risk_alerts = len([r for r in recommendations if r.get("type") in {"risk", "risk_management"}])
+    timing_insights = len([r for r in recommendations if r.get("type") == "timing"])
+    performance_insights = len([r for r in recommendations if r.get("type") == "performance"])
+
+    with recommendation_summary_columns[0]:
+        render_metric_card("Total Signals", str(len(recommendations)), tone="neutral")
+    with recommendation_summary_columns[1]:
+        render_metric_card("Risk Alerts", str(risk_alerts), tone="danger" if risk_alerts else "neutral")
+    with recommendation_summary_columns[2]:
+        render_metric_card(
+            "Performance Insights",
+            str(performance_insights + timing_insights),
+            tone="good" if (performance_insights + timing_insights) else "neutral",
+        )
+
     render_recommendations_panel(recommendations)
 
     _section_spacing()
@@ -194,7 +216,8 @@ def main() -> None:
 
     _section_spacing()
 
-    render_strategy_analyzer_panel(format_strategy_analyzer(data.strategy_analyzer))
+    formatted_strategy = format_strategy_analyzer(data.strategy_analyzer)
+    _render_strategy_analyzer_cards(formatted_strategy)
 
     _section_spacing()
 
@@ -204,38 +227,20 @@ def main() -> None:
     trade_table = pd.DataFrame(filtered_trade_rows)
 
     if not trade_table.empty:
-        trade_table = _format_trade_table(trade_table)
+        display_table, pnl_raw = _format_trade_table(trade_table)
 
         def highlight_pnl(row):
-            pnl_value = row.get("PnL Raw")
+            pnl_value = pnl_raw.loc[row.name] if row.name in pnl_raw.index else None
             if pd.isna(pnl_value):
                 return [""] * len(row)
 
-            styles = [""] * len(row)
             if pnl_value > 0:
-                styles = ["background-color: rgba(34, 197, 94, 0.10);"] * len(row)
-            elif pnl_value < 0:
-                styles = ["background-color: rgba(239, 68, 68, 0.10);"] * len(row)
+                return ["background-color: rgba(34, 197, 94, 0.10);"] * len(row)
+            if pnl_value < 0:
+                return ["background-color: rgba(239, 68, 68, 0.10);"] * len(row)
+            return [""] * len(row)
 
-            return styles
-
-        display_columns = [
-            "Ticket",
-            "Symbol",
-            "Type",
-            "Open Time",
-            "Close Time",
-            "PnL",
-            "Volume",
-            "Duration",
-        ]
-
-        if "R Multiple" in trade_table.columns:
-            display_columns.append("R Multiple")
-
-        display_table = trade_table[display_columns + ["PnL Raw"]].copy()
         styled_table = display_table.style.apply(highlight_pnl, axis=1)
-        styled_table = styled_table.hide(axis="columns", subset=["PnL Raw"])
 
         st.dataframe(
             styled_table,
@@ -348,7 +353,133 @@ def _drawdown_tone(value: float) -> str:
     return "danger"
 
 
-def _format_trade_table(trade_table: pd.DataFrame) -> pd.DataFrame:
+def _render_health_banner(data: Any, recommendations: list[dict[str, Any]]) -> None:
+    traffic_value = data.account_metrics.traffic_light.lower()
+    risk_value = data.current_risk_zone.lower()
+    banner_color = {
+        "green": "#14532d",
+        "yellow": "#713f12",
+        "red": "#7f1d1d",
+    }.get(traffic_value, "#1f2937")
+
+    traffic_label = traffic_value.title()
+    risk_label = risk_value.title()
+    signal_count = len(recommendations)
+
+    st.markdown(
+        f"""
+        <div style="
+            margin-top: 0.5rem;
+            margin-bottom: 1.25rem;
+            padding: 1rem 1.25rem;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(135deg, {banner_color}22, rgba(15,23,42,0.92));
+        ">
+            <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem;">ACCOUNT HEALTH BANNER</div>
+            <div style="font-size: 1.35rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.5rem;">
+                Traffic Light: {traffic_label} · Risk Zone: {risk_label}
+            </div>
+            <div style="font-size: 0.95rem; color: #cbd5e1;">
+                Net Profit {data.performance.net_profit:.2f} · Max Drawdown {data.account_metrics.max_drawdown_pct:.2f}% ·
+                Ulcer Index {data.account_metrics.ulcer_index:.2f} · Recommendation Signals {signal_count}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_strategy_analyzer_cards(formatted_strategy: Any) -> None:
+    render_section_title("Strategy Analyzer", "Execution behaviour, duration quality and streak resilience.")
+
+    avg_duration = _extract_value(
+        formatted_strategy,
+        ["average_trade_duration", "avg_trade_duration"],
+        default="-",
+    )
+    best_duration = _extract_value(
+        formatted_strategy,
+        ["best_duration_bucket"],
+        default="-",
+    )
+    worst_duration = _extract_value(
+        formatted_strategy,
+        ["worst_duration_bucket"],
+        default="-",
+    )
+    best_size = _extract_value(
+        formatted_strategy,
+        ["best_size_bucket"],
+        default="-",
+    )
+    worst_size = _extract_value(
+        formatted_strategy,
+        ["worst_size_bucket"],
+        default="-",
+    )
+    best_win_cont = _extract_value(
+        formatted_strategy,
+        ["best_continuation_after_win_streak", "best_win_streak_continuation"],
+        default="-",
+    )
+    worst_win_cont = _extract_value(
+        formatted_strategy,
+        ["worst_continuation_after_win_streak", "worst_win_streak_continuation"],
+        default="-",
+    )
+    best_loss_recovery = _extract_value(
+        formatted_strategy,
+        ["best_recovery_after_loss_streak"],
+        default="-",
+    )
+    worst_loss_cont = _extract_value(
+        formatted_strategy,
+        ["worst_continuation_after_loss_streak", "worst_loss_streak_continuation"],
+        default="-",
+    )
+
+    row1 = st.columns(3)
+    with row1[0]:
+        render_metric_card("Average Trade Duration", str(avg_duration), tone="neutral")
+    with row1[1]:
+        render_metric_card("Best Duration Bucket", str(best_duration), tone="good")
+    with row1[2]:
+        render_metric_card("Worst Duration Bucket", str(worst_duration), tone="danger")
+
+    row2 = st.columns(3)
+    with row2[0]:
+        render_metric_card("Best Size Bucket", str(best_size), tone="good")
+    with row2[1]:
+        render_metric_card("Worst Size Bucket", str(worst_size), tone="danger")
+    with row2[2]:
+        render_metric_card("Best Win-Streak Continuation", str(best_win_cont), tone="good")
+
+    row3 = st.columns(3)
+    with row3[0]:
+        render_metric_card("Worst Win-Streak Continuation", str(worst_win_cont), tone="danger")
+    with row3[1]:
+        render_metric_card("Best Loss Recovery", str(best_loss_recovery), tone="good")
+    with row3[2]:
+        render_metric_card("Worst Loss Continuation", str(worst_loss_cont), tone="danger")
+
+
+def _extract_value(source: Any, keys: list[str], default: str = "-") -> Any:
+    if isinstance(source, dict):
+        for key in keys:
+            if key in source and source[key] not in (None, ""):
+                return source[key]
+        return default
+
+    for key in keys:
+        value = getattr(source, key, None)
+        if value not in (None, ""):
+            return value
+
+    return default
+
+
+def _format_trade_table(trade_table: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     table = trade_table.copy()
 
     rename_map = {
@@ -364,8 +495,9 @@ def _format_trade_table(trade_table: pd.DataFrame) -> pd.DataFrame:
     }
     table = table.rename(columns=rename_map)
 
+    pnl_raw = table["PnL"].copy() if "PnL" in table.columns else pd.Series(index=table.index, dtype=float)
+
     if "PnL" in table.columns:
-        table["PnL Raw"] = table["PnL"]
         table["PnL"] = table["PnL"].map(_format_pnl)
 
     if "Volume" in table.columns:
@@ -383,7 +515,7 @@ def _format_trade_table(trade_table: pd.DataFrame) -> pd.DataFrame:
     if "Symbol" in table.columns:
         table["Symbol"] = table["Symbol"].map(_format_symbol_badge)
 
-    return table
+    return table, pnl_raw
 
 
 def _format_pnl(value) -> str:
@@ -426,9 +558,9 @@ def _format_symbol_badge(value: str) -> str:
     symbol = str(value).upper()
 
     symbol_icons = {
-        "EURUSD": "🇪🇺 EURUSD",
-        "GBPUSD": "🇬🇧 GBPUSD",
-        "USDJPY": "🇯🇵 USDJPY",
+        "EURUSD": "💶 EURUSD",
+        "GBPUSD": "💷 GBPUSD",
+        "USDJPY": "💴 USDJPY",
         "XAUUSD": "🥇 XAUUSD",
         "US30": "🇺🇸 US30",
         "NAS100": "💻 NAS100",
