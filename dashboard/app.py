@@ -279,6 +279,18 @@ def _render_general_inputs_section() -> None:
     with st.container(border=True):
         st.markdown("#### Inputs Gerais")
         st.caption("Statement base e parametros principais do dashboard.")
+
+        uploaded_file = st.file_uploader(
+            "Upload MT4 Statement",
+            type=["html", "htm"],
+            help="Upload a detailed MT4 HTML report. The dashboard will automatically use it.",
+        )
+
+        if uploaded_file is not None:
+            saved_path = _save_uploaded_statement(uploaded_file)
+            st.session_state.statement_path = str(saved_path)
+            st.success(f"Statement uploaded: {uploaded_file.name}")
+
         st.text_input("MT4 Statement", key="statement_path")
         st.number_input("Initial Balance", min_value=0.0, step=100.0, key="initial_balance")
         st.text_input("Cycle Target (optional)", key="cycle_target_value")
@@ -351,6 +363,17 @@ def _drawdown_tone(value: float) -> str:
     if value <= 10:
         return "warning"
     return "danger"
+
+
+def _save_uploaded_statement(uploaded_file) -> Path:
+    uploads_dir = PROJECT_ROOT / "data" / "imports"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = Path(uploaded_file.name).name
+    saved_path = uploads_dir / safe_name
+    saved_path.write_bytes(uploaded_file.getbuffer())
+
+    return saved_path
 
 
 def _render_health_banner(data: Any, recommendations: list[dict[str, Any]]) -> None:
@@ -515,7 +538,21 @@ def _format_trade_table(trade_table: pd.DataFrame) -> tuple[pd.DataFrame, pd.Ser
     if "Symbol" in table.columns:
         table["Symbol"] = table["Symbol"].map(_format_symbol_badge)
 
-    return table, pnl_raw
+    display_columns = [
+        "Ticket",
+        "Symbol",
+        "Type",
+        "Open Time",
+        "Close Time",
+        "PnL",
+        "Volume",
+        "Duration",
+    ]
+
+    if "R Multiple" in table.columns:
+        display_columns.append("R Multiple")
+
+    return table[display_columns], pnl_raw
 
 
 def _format_pnl(value) -> str:
