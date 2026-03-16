@@ -12,10 +12,12 @@ import pandas as pd
 import streamlit as st
 
 from analytics.charts import create_drawdown_curve_chart, create_equity_curve_chart
+from analytics.recommendations.recommendation_engine import RecommendationEngine
 from dashboard.components import get_dashboard_theme_css, render_metric_card, render_section_title
 from dashboard.data_loader import DEFAULT_INITIAL_BALANCE, load_dashboard_data
 from dashboard.filters import TradeFilters, get_filter_options
 from dashboard.insights_formatter import format_strategy_analyzer, format_trade_intelligence
+from dashboard.recommendations_panel import render_recommendations_panel
 from dashboard.strategy_panel import render_strategy_analyzer_panel, render_trade_intelligence_panel
 from dashboard.trade_explorer import build_filtered_trade_rows
 
@@ -37,8 +39,9 @@ TRADE_FILTER_KEYS = (
 def main() -> None:
     st.set_page_config(page_title="EdgeTracker-Pro", layout="wide")
     _inject_dashboard_styles()
+
     st.title("EdgeTracker-Pro Dashboard")
-    st.caption("Professional trade analytics dashboard for equity, risk, performance, and insights.")
+    st.caption("Professional trading analytics platform for performance, risk and edge discovery.")
 
     default_path = PROJECT_ROOT / "data" / "imports" / "mt4_statement.html"
     _initialize_general_inputs(default_path)
@@ -47,20 +50,39 @@ def main() -> None:
         st.markdown("### Sidebar")
         st.caption("Configure the statement source and explore filtered trades.")
         st.divider()
-
         _render_general_inputs_section()
 
     cycle_target = _parse_cycle_target(st.session_state.cycle_target_value)
+
     data = load_dashboard_data(
         st.session_state.statement_path,
         initial_balance=st.session_state.initial_balance,
         cycle_target=cycle_target,
     )
+
+    recommendation_metrics = {
+        "profit_factor": data.performance.profit_factor,
+        "win_rate": data.performance.win_rate,
+        "max_drawdown": data.account_metrics.max_drawdown_pct,
+        "best_symbol": getattr(data.trade_intelligence, "best_symbol", None),
+        "worst_day": getattr(data.trade_intelligence, "worst_day", None),
+        "expectancy": data.performance.expectancy,
+        "health_score": getattr(data.account_metrics, "health_score", None),
+        "health_classification": getattr(data.account_metrics, "health_classification", None),
+        "best_hour": getattr(data.trade_intelligence, "best_hour", None),
+        "worst_hour": getattr(data.trade_intelligence, "worst_hour", None),
+        "best_duration_bucket": getattr(data.strategy_analyzer, "best_duration_bucket", None),
+        "worst_duration_bucket": getattr(data.strategy_analyzer, "worst_duration_bucket", None),
+    }
+
+    engine = RecommendationEngine()
+    recommendations = engine.generate(recommendation_metrics)
+
     filter_options = get_filter_options(data.normalized_trades)
     _initialize_trade_filters(data.normalized_trades)
 
     with st.sidebar:
-        st.divider()
+        _section_spacing()
         _render_trade_filters_section(filter_options, data.normalized_trades)
 
     date_from, date_to = _resolve_selected_dates(st.session_state.filter_date_range)
@@ -74,7 +96,7 @@ def main() -> None:
     )
     filtered_trade_rows = build_filtered_trade_rows(data.normalized_trades, trade_filters)
 
-    render_section_title("Metricas Principais", "Core performance snapshot for the selected statement.")
+    render_section_title("Core Metrics", "Snapshot of the most important performance indicators.")
     metric_columns = st.columns(5)
     with metric_columns[0]:
         render_metric_card("Total Trades", str(data.performance.total_trades))
@@ -91,46 +113,137 @@ def main() -> None:
             tone=_profit_tone(data.performance.net_profit),
         )
 
-    st.divider()
+    _section_spacing()
 
-    render_section_title("Estado da Conta", data.account_metrics.health_summary)
+    render_section_title("Estado da Conta", "Core health and risk status for the current account.")
+
+    summary_columns = st.columns(3)
+    with summary_columns[0]:
+        render_metric_card(
+            "Profit",
+            f"{data.performance.net_profit:.2f}",
+            tone=_profit_tone(data.performance.net_profit),
+        )
+    with summary_columns[1]:
+        render_metric_card(
+            "Max Drawdown",
+            f"{data.account_metrics.max_drawdown_pct:.2f}%",
+            tone=_drawdown_tone(data.account_metrics.max_drawdown_pct),
+        )
+    with summary_columns[2]:
+        render_metric_card(
+            "Ulcer Index",
+            f"{data.account_metrics.ulcer_index:.2f}",
+            tone="neutral",
+        )
+
     state_columns = st.columns(3)
     with state_columns[0]:
-        render_metric_card("Traffic Light", data.account_metrics.traffic_light.title(), tone=_status_tone(data.account_metrics.traffic_light))
+        traffic_value = data.account_metrics.traffic_light.lower()
+        traffic_label = {
+            "green": "🟢 Green",
+            "yellow": "🟡 Yellow",
+            "red": "🔴 Red",
+        }.get(traffic_value, traffic_value.title())
+
+        render_metric_card(
+            "Traffic Light",
+            traffic_label,
+            tone=_status_tone(traffic_value),
+        )
+
     with state_columns[1]:
-        render_metric_card("Risk Zone", data.current_risk_zone.title(), tone=_status_tone(data.current_risk_zone))
+        risk_value = data.current_risk_zone.lower()
+        risk_label = {
+            "green": "🟢 Green",
+            "yellow": "🟡 Yellow",
+            "red": "🔴 Red",
+        }.get(risk_value, risk_value.title())
+
+        render_metric_card(
+            "Risk Zone",
+            risk_label,
+            tone=_status_tone(risk_value),
+        )
+
     with state_columns[2]:
-        render_metric_card("Current Drawdown %", f"{data.current_drawdown_pct:.2f}%", tone=_drawdown_tone(data.current_drawdown_pct))
+        render_metric_card(
+            "Current Drawdown %",
+            f"{data.current_drawdown_pct:.2f}%",
+            tone=_drawdown_tone(data.current_drawdown_pct),
+        )
 
-    st.divider()
+    _section_spacing()
 
-    render_section_title("Graficos", "Equity and drawdown curves for the current account selection.")
+    render_section_title(
+        "Key Recommendations",
+        "Actionable insights generated from your current performance profile.",
+    )
+    render_recommendations_panel(recommendations)
+
+    _section_spacing()
+
+    render_section_title("Performance Charts", "Equity and drawdown curves for the current account.")
     chart_columns = st.columns(2)
     chart_columns[0].pyplot(create_equity_curve_chart(data.equity_timeline))
     chart_columns[1].pyplot(create_drawdown_curve_chart(data.drawdown_series))
 
-    st.divider()
+    _section_spacing()
+
     render_trade_intelligence_panel(format_trade_intelligence(data.trade_intelligence))
-    st.divider()
+
+    _section_spacing()
+
     render_strategy_analyzer_panel(format_strategy_analyzer(data.strategy_analyzer))
 
-    st.divider()
-    render_section_title("Trade Table", f"Filtered trades: {len(filtered_trade_rows)}")
-    st.caption(f"Filtered trades: {len(filtered_trade_rows)}")
+    _section_spacing()
+
+    render_section_title("Trade Explorer", f"{len(filtered_trade_rows)} filtered trades")
+    st.caption("Review execution quality, duration and result distribution trade by trade.")
+
     trade_table = pd.DataFrame(filtered_trade_rows)
-    st.dataframe(
-        trade_table.style.format(
-            {
-                "pnl": "{:.4f}",
-                "volume": "{:.2f}",
-                "duration_minutes": "{:.2f}",
-                "r_multiple": "{:.4f}",
-            },
-            na_rep="",
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+
+    if not trade_table.empty:
+        trade_table = _format_trade_table(trade_table)
+
+        def highlight_pnl(row):
+            pnl_value = row.get("PnL Raw")
+            if pd.isna(pnl_value):
+                return [""] * len(row)
+
+            styles = [""] * len(row)
+            if pnl_value > 0:
+                styles = ["background-color: rgba(34, 197, 94, 0.10);"] * len(row)
+            elif pnl_value < 0:
+                styles = ["background-color: rgba(239, 68, 68, 0.10);"] * len(row)
+
+            return styles
+
+        display_columns = [
+            "Ticket",
+            "Symbol",
+            "Type",
+            "Open Time",
+            "Close Time",
+            "PnL",
+            "Volume",
+            "Duration",
+        ]
+
+        if "R Multiple" in trade_table.columns:
+            display_columns.append("R Multiple")
+
+        display_table = trade_table[display_columns + ["PnL Raw"]].copy()
+        styled_table = display_table.style.apply(highlight_pnl, axis=1)
+        styled_table = styled_table.hide(axis="columns", subset=["PnL Raw"])
+
+        st.dataframe(
+            styled_table,
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No trades match the current filters.")
 
 
 def _initialize_general_inputs(default_path: Path) -> None:
@@ -208,6 +321,12 @@ def _inject_dashboard_styles() -> None:
     st.markdown(get_dashboard_theme_css(), unsafe_allow_html=True)
 
 
+def _section_spacing() -> None:
+    st.markdown("<div style='margin: 1.25rem 0;'></div>", unsafe_allow_html=True)
+    st.divider()
+    st.markdown("<div style='margin: 0.5rem 0;'></div>", unsafe_allow_html=True)
+
+
 def _status_tone(value: str) -> str:
     mapping = {"green": "good", "yellow": "warning", "red": "danger"}
     return mapping.get(value.lower(), "neutral")
@@ -227,6 +346,96 @@ def _drawdown_tone(value: float) -> str:
     if value <= 10:
         return "warning"
     return "danger"
+
+
+def _format_trade_table(trade_table: pd.DataFrame) -> pd.DataFrame:
+    table = trade_table.copy()
+
+    rename_map = {
+        "ticket": "Ticket",
+        "symbol": "Symbol",
+        "type": "Type",
+        "open_time": "Open Time",
+        "close_time": "Close Time",
+        "pnl": "PnL",
+        "volume": "Volume",
+        "duration_minutes": "Duration",
+        "r_multiple": "R Multiple",
+    }
+    table = table.rename(columns=rename_map)
+
+    if "PnL" in table.columns:
+        table["PnL Raw"] = table["PnL"]
+        table["PnL"] = table["PnL"].map(_format_pnl)
+
+    if "Volume" in table.columns:
+        table["Volume"] = table["Volume"].map(lambda x: f"{x:.2f}" if pd.notnull(x) else "")
+
+    if "Duration" in table.columns:
+        table["Duration"] = table["Duration"].map(_format_duration)
+
+    if "R Multiple" in table.columns:
+        table["R Multiple"] = table["R Multiple"].map(lambda x: f"{x:.2f}" if pd.notnull(x) else "")
+
+    if "Type" in table.columns:
+        table["Type"] = table["Type"].map(_format_trade_type)
+
+    if "Symbol" in table.columns:
+        table["Symbol"] = table["Symbol"].map(_format_symbol_badge)
+
+    return table
+
+
+def _format_pnl(value) -> str:
+    if pd.isna(value):
+        return ""
+
+    if value > 0:
+        return f"🟢 +{value:.2f}"
+    if value < 0:
+        return f"🔴 {value:.2f}"
+    return f"{value:.2f}"
+
+
+def _format_duration(minutes) -> str:
+    if pd.isna(minutes):
+        return ""
+
+    total_seconds = int(round(float(minutes) * 60))
+    m = total_seconds // 60
+    s = total_seconds % 60
+    return f"{m}:{s:02d}"
+
+
+def _format_trade_type(value: str) -> str:
+    if not value:
+        return ""
+
+    value_lower = str(value).lower()
+    if value_lower == "buy":
+        return "🟢 BUY"
+    if value_lower == "sell":
+        return "🔴 SELL"
+    return str(value).upper()
+
+
+def _format_symbol_badge(value: str) -> str:
+    if not value:
+        return ""
+
+    symbol = str(value).upper()
+
+    symbol_icons = {
+        "EURUSD": "🇪🇺 EURUSD",
+        "GBPUSD": "🇬🇧 GBPUSD",
+        "USDJPY": "🇯🇵 USDJPY",
+        "XAUUSD": "🥇 XAUUSD",
+        "US30": "🇺🇸 US30",
+        "NAS100": "💻 NAS100",
+        "SPX500": "📊 SPX500",
+    }
+
+    return symbol_icons.get(symbol, f"🏷️ {symbol}")
 
 
 if __name__ == "__main__":
