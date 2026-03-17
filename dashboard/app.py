@@ -240,7 +240,7 @@ def main() -> None:
     _section_spacing()
 
     formatted_strategy = format_strategy_analyzer(data.strategy_analyzer)
-    _render_strategy_analyzer_cards(formatted_strategy)
+    _render_strategy_analyzer_cards(formatted_strategy, data.strategy_analyzer)
 
     _section_spacing()
 
@@ -249,6 +249,29 @@ def main() -> None:
         "Daily equity behaviour, streak quality, recovery speed and momentum analysis.",
     )
     _render_equity_intelligence(data.normalized_trades)
+
+    _section_spacing()
+
+    _render_premium_section_header(
+        "Risk Behaviour Analyzer",
+        "Detect overtrading, revenge behaviour, size escalation and post-loss pressure.",
+    )
+    _render_risk_behaviour_analyzer(data.normalized_trades)
+
+    _section_spacing()
+
+    _render_premium_section_header(
+        "AI Strategy Coach",
+        "Action-oriented coaching generated from your edge, risk and behaviour profile.",
+    )
+    _render_ai_strategy_coach(
+        data=data,
+        edge_score=edge_score,
+        recommendations=recommendations,
+        formatted_trade_intelligence=formatted_trade_intelligence,
+        formatted_strategy=formatted_strategy,
+        trades=data.normalized_trades,
+    )
 
     _section_spacing()
 
@@ -583,33 +606,35 @@ def _render_trade_intelligence_cards(trade_intelligence: Any) -> None:
         render_metric_card("Worst Symbol", str(worst_symbol), tone="danger")
 
 
-def _render_strategy_analyzer_cards(formatted_strategy: Any) -> None:
+def _render_strategy_analyzer_cards(formatted_strategy: Any, raw_strategy: Any) -> None:
     _render_premium_section_header(
         "Strategy Analyzer",
         "Execution behaviour, duration quality and streak resilience.",
     )
 
-    avg_duration = _extract_value(formatted_strategy, ["average_trade_duration", "avg_trade_duration"], default="-")
-    best_duration = _extract_value(formatted_strategy, ["best_duration_bucket"], default="-")
-    worst_duration = _extract_value(formatted_strategy, ["worst_duration_bucket"], default="-")
-    best_size = _extract_value(formatted_strategy, ["best_size_bucket"], default="-")
-    worst_size = _extract_value(formatted_strategy, ["worst_size_bucket"], default="-")
-    best_win_cont = _extract_value(
-        formatted_strategy,
-        ["best_continuation_after_win_streak", "best_win_streak_continuation"],
-        default="-",
-    )
-    worst_win_cont = _extract_value(
-        formatted_strategy,
-        ["worst_continuation_after_win_streak", "worst_win_streak_continuation"],
-        default="-",
-    )
-    best_loss_recovery = _extract_value(formatted_strategy, ["best_recovery_after_loss_streak"], default="-")
-    worst_loss_cont = _extract_value(
-        formatted_strategy,
-        ["worst_continuation_after_loss_streak", "worst_loss_streak_continuation"],
-        default="-",
-    )
+    def pick(*keys, default="-"):
+        for source in (formatted_strategy, raw_strategy):
+            if isinstance(source, dict):
+                for key in keys:
+                    value = source.get(key)
+                    if value not in (None, "", []):
+                        return value
+            else:
+                for key in keys:
+                    value = getattr(source, key, None)
+                    if value not in (None, "", []):
+                        return value
+        return default
+
+    avg_duration = pick("average_trade_duration", "avg_trade_duration")
+    best_duration = pick("best_duration_bucket")
+    worst_duration = pick("worst_duration_bucket")
+    best_size = pick("best_size_bucket")
+    worst_size = pick("worst_size_bucket")
+    best_win_cont = pick("best_continuation_after_win_streak", "best_win_streak_continuation")
+    worst_win_cont = pick("worst_continuation_after_win_streak", "worst_win_streak_continuation")
+    best_loss_recovery = pick("best_recovery_after_loss_streak")
+    worst_loss_cont = pick("worst_continuation_after_loss_streak", "worst_loss_streak_continuation")
 
     row1 = st.columns(3)
     with row1[0]:
@@ -625,15 +650,15 @@ def _render_strategy_analyzer_cards(formatted_strategy: Any) -> None:
     with row2[1]:
         render_metric_card("Worst Size Bucket", str(worst_size), tone="danger")
     with row2[2]:
-        render_metric_card("Best Win-Streak Continuation", str(best_win_cont), tone="good")
+        render_metric_card("Best Win-Streak Continuation", str(best_win_cont), tone="good" if best_win_cont != "-" else "neutral")
 
     row3 = st.columns(3)
     with row3[0]:
-        render_metric_card("Worst Win-Streak Continuation", str(worst_win_cont), tone="danger")
+        render_metric_card("Worst Win-Streak Continuation", str(worst_win_cont), tone="danger" if worst_win_cont != "-" else "neutral")
     with row3[1]:
-        render_metric_card("Best Loss Recovery", str(best_loss_recovery), tone="good")
+        render_metric_card("Best Loss Recovery", str(best_loss_recovery), tone="good" if best_loss_recovery != "-" else "neutral")
     with row3[2]:
-        render_metric_card("Worst Loss Continuation", str(worst_loss_cont), tone="danger")
+        render_metric_card("Worst Loss Continuation", str(worst_loss_cont), tone="danger" if worst_loss_cont != "-" else "neutral")
 
 
 def _render_equity_intelligence(trades: list[Any]) -> None:
@@ -775,6 +800,188 @@ def _render_equity_intelligence(trades: list[Any]) -> None:
         render_metric_card("Hot Streak Detection", hot_streak, tone=hot_tone)
 
 
+def _render_risk_behaviour_analyzer(trades: list[Any]) -> None:
+    if not trades:
+        st.info("No trades available for behaviour analysis.")
+        return
+
+    ordered_trades = sorted(
+        [trade for trade in trades if getattr(trade, "closed_at", None) is not None],
+        key=lambda x: x.closed_at,
+    )
+
+    if not ordered_trades:
+        st.info("No trades available for behaviour analysis.")
+        return
+
+    volumes = []
+    overtrading_days = 0
+    revenge_events = 0
+    size_escalation_events = 0
+    post_loss_pressure = 0
+
+    day_counts: dict[Any, int] = {}
+    prev_trade = None
+
+    for trade in ordered_trades:
+        closed_at = getattr(trade, "closed_at", None)
+        pnl = float(getattr(trade, "net_profit", 0.0) or 0.0)
+        volume = float(getattr(trade, "volume", 0.0) or 0.0)
+        volumes.append(volume)
+
+        if closed_at is not None:
+            day_counts[closed_at.date()] = day_counts.get(closed_at.date(), 0) + 1
+
+        if prev_trade is not None:
+            prev_pnl = float(getattr(prev_trade, "net_profit", 0.0) or 0.0)
+            prev_volume = float(getattr(prev_trade, "volume", 0.0) or 0.0)
+            prev_closed = getattr(prev_trade, "closed_at", None)
+
+            if prev_pnl < 0 and prev_closed and closed_at:
+                minutes_gap = (closed_at - prev_closed).total_seconds() / 60
+                if minutes_gap <= 10:
+                    revenge_events += 1
+                if volume > prev_volume:
+                    size_escalation_events += 1
+                if pnl < 0:
+                    post_loss_pressure += 1
+
+        prev_trade = trade
+
+    overtrading_threshold = max(15, int(pd.Series(list(day_counts.values())).mean() * 1.8)) if day_counts else 15
+    overtrading_days = sum(1 for count in day_counts.values() if count >= overtrading_threshold)
+
+    avg_volume = sum(volumes) / len(volumes) if volumes else 0.0
+    max_volume = max(volumes) if volumes else 0.0
+
+    escalation_ratio = (size_escalation_events / max(1, len(ordered_trades) - 1)) * 100
+    revenge_ratio = (revenge_events / max(1, len(ordered_trades) - 1)) * 100
+
+    row1 = st.columns(4)
+    with row1[0]:
+        render_metric_card("Overtrading Days", str(overtrading_days), tone="warning" if overtrading_days else "neutral")
+    with row1[1]:
+        render_metric_card("Revenge Signals", str(revenge_events), tone="danger" if revenge_events else "neutral")
+    with row1[2]:
+        render_metric_card("Size Escalations", str(size_escalation_events), tone="warning" if size_escalation_events else "neutral")
+    with row1[3]:
+        render_metric_card("Post-Loss Pressure", str(post_loss_pressure), tone="danger" if post_loss_pressure else "neutral")
+
+    row2 = st.columns(4)
+    with row2[0]:
+        render_metric_card("Avg Volume", f"{avg_volume:.2f}", tone="neutral")
+    with row2[1]:
+        render_metric_card("Max Volume", f"{max_volume:.2f}", tone="neutral")
+    with row2[2]:
+        render_metric_card("Escalation Ratio", f"{escalation_ratio:.1f}%", tone="warning" if escalation_ratio >= 20 else "neutral")
+    with row2[3]:
+        render_metric_card("Revenge Ratio", f"{revenge_ratio:.1f}%", tone="danger" if revenge_ratio >= 15 else "neutral")
+
+    behaviour_messages = []
+    if overtrading_days > 0:
+        behaviour_messages.append(f"⚠️ Overtrading detected on {overtrading_days} trading day(s).")
+    if revenge_events > 0:
+        behaviour_messages.append(f"⚠️ {revenge_events} possible revenge-trading signal(s) after losses.")
+    if size_escalation_events > 0:
+        behaviour_messages.append(f"🛡️ Position size increased after losses {size_escalation_events} time(s).")
+    if post_loss_pressure > 0:
+        behaviour_messages.append(f"🔻 Consecutive underperformance after losses detected {post_loss_pressure} time(s).")
+
+    if behaviour_messages:
+        for message in behaviour_messages:
+            st.warning(message)
+    else:
+        st.success("No strong negative risk behaviour patterns detected.")
+
+
+def _render_ai_strategy_coach(
+    data: Any,
+    edge_score: Any,
+    recommendations: list[dict[str, Any]],
+    formatted_trade_intelligence: Any,
+    formatted_strategy: Any,
+    trades: list[Any],
+) -> None:
+    coach_notes: list[str] = []
+
+    def pick(source: Any, *keys, default="-"):
+        if isinstance(source, dict):
+            for key in keys:
+                value = source.get(key)
+                if value not in (None, "", []):
+                    return value
+        else:
+            for key in keys:
+                value = getattr(source, key, None)
+                if value not in (None, "", []):
+                    return value
+        return default
+
+    best_symbol = pick(formatted_trade_intelligence, "best_symbol")
+    worst_symbol = pick(formatted_trade_intelligence, "worst_symbol")
+    best_day = pick(formatted_trade_intelligence, "best_day", "best_day_of_week")
+    worst_day = pick(formatted_trade_intelligence, "worst_day", "worst_day_of_week")
+    best_hour = pick(formatted_trade_intelligence, "best_hour", "best_trading_hour")
+    worst_hour = pick(formatted_trade_intelligence, "worst_hour", "worst_trading_hour")
+    best_duration = pick(formatted_strategy, "best_duration_bucket")
+    worst_duration = pick(formatted_strategy, "worst_duration_bucket")
+
+    if best_symbol != "-":
+        coach_notes.append(f"📈 Lean into {best_symbol}, which is currently your strongest symbol.")
+    if worst_symbol != "-":
+        coach_notes.append(f"🛑 Reduce exposure to {worst_symbol} until performance stabilises.")
+    if best_day != "-":
+        coach_notes.append(f"🗓️ Your edge appears strongest on {best_day}.")
+    if worst_day != "-":
+        coach_notes.append(f"⚠️ Review decision quality on {worst_day}, your weakest day so far.")
+    if best_hour != "-":
+        coach_notes.append(f"🕒 Performance looks stronger around {best_hour}:00.")
+    if worst_hour != "-":
+        coach_notes.append(f"⏱️ Avoid forcing setups around {worst_hour}:00.")
+    if best_duration != "-":
+        coach_notes.append(f"🎯 {best_duration} duration trades currently show the cleanest edge.")
+    if worst_duration != "-":
+        coach_notes.append(f"📉 {worst_duration} duration trades appear weaker and may need tighter management.")
+
+    if data.performance.profit_factor < 1.0:
+        coach_notes.append("🛡️ Profit factor is below 1.0, so improving reward-to-risk should be a top priority.")
+    if data.performance.expectancy < 0:
+        coach_notes.append("📊 Expectancy is negative, which suggests the current execution pattern needs refinement.")
+    if data.account_metrics.max_drawdown_pct > 10:
+        coach_notes.append("🔻 Drawdown is elevated. Trade smaller until recovery quality improves.")
+    if edge_score.score >= 70:
+        coach_notes.append("🚀 Edge score is strong. Focus on consistency rather than adding complexity.")
+    elif edge_score.score < 55:
+        coach_notes.append("🧠 Edge score is fragile. Focus on preserving capital and removing weak setups.")
+
+    if not coach_notes:
+        coach_notes.append("💡 No critical coaching signals detected. Maintain discipline and keep collecting data.")
+
+    top_notes = coach_notes[:6]
+    for note in top_notes:
+        st.info(note)
+
+    summary = " ".join(note.replace("📈 ", "").replace("🛑 ", "").replace("🗓️ ", "").replace("⚠️ ", "").replace("🕒 ", "").replace("⏱️ ", "").replace("🎯 ", "").replace("📉 ", "").replace("🛡️ ", "").replace("📊 ", "").replace("🔻 ", "").replace("🚀 ", "").replace("🧠 ", "").replace("💡 ", "") for note in top_notes[:3])
+
+    st.markdown(
+        f"""
+        <div style="
+            margin-top: 0.75rem;
+            padding: 1rem 1.25rem;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(15,23,42,0.92));
+        ">
+            <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem;">COACH SUMMARY</div>
+            <div style="font-size: 0.98rem; color: #e5e7eb; line-height: 1.6;">
+                {summary}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_session_analyzer(trades: list[Any]) -> None:
     session_stats = {"Asia": [], "London": [], "New York": []}
 
@@ -890,21 +1097,6 @@ def _simple_bar_chart(series: pd.Series, xlabel: str, ylabel: str):
     ax.grid(axis="y", alpha=0.2)
     fig.tight_layout()
     return fig
-
-
-def _extract_value(source: Any, keys: list[str], default: str = "-") -> Any:
-    if isinstance(source, dict):
-        for key in keys:
-            if key in source and source[key] not in (None, ""):
-                return source[key]
-        return default
-
-    for key in keys:
-        value = getattr(source, key, None)
-        if value not in (None, ""):
-            return value
-
-    return default
 
 
 def _format_trade_table(trade_table: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
